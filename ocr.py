@@ -2,7 +2,7 @@ import streamlit as st
 import os
 import cv2
 import numpy as np
-from paddleocr import PaddleOCR
+from paddleocr import PPStructure, PaddleOCR
 import pdfplumber
 import pandas as pd
 from fpdf import FPDF
@@ -11,8 +11,8 @@ import tempfile
 import concurrent.futures
 import re
 
-# Initialize PaddleOCR with English language model
-ocr = PaddleOCR(use_angle_cls=True, lang='en', min_text_area=10)
+# Initialize PaddleOCR with the PPStructure module and English language model
+ocr = PPStructure(recovery=True, use_angle_cls=True, lang='en')
 
 # Preprocess images for better OCR performance
 def preprocess_image(image):
@@ -30,14 +30,16 @@ def preprocess_image(image):
     deskewed = deskew_image(sharpened)
     return deskewed
 
-# Perform OCR with bounding box processing
+# Perform OCR with bounding box processing using PPStructure
 def perform_ocr_with_bounding_boxes(image, min_confidence=0.6):
-    ocr_results = ocr.ocr(image, cls=True)  # Get text detection and recognition results
+    ocr_results = ocr(image)  # Get text detection and recognition results from PPStructure
     results = []
     
-    for line in ocr_results:
-        for item in line:
-            bbox, text, confidence = item[0], item[1][0], item[1][1]
+    for item in ocr_results:
+        for elem in item['layout']['elements']:
+            text = elem['text']
+            bbox = elem['bbox']
+            confidence = elem.get('confidence', 1.0)  # Default to 1.0 if confidence is not present
             if confidence > min_confidence:
                 # Append bounding box coordinates along with the detected text
                 results.append({'text': text, 'bbox': bbox, 'confidence': confidence})
@@ -50,7 +52,7 @@ def process_bounding_boxes(ocr_data):
     Process the bounding box data to determine the spatial relationship between fields.
     """
     # Sort results by the y-coordinate (top to bottom) and then x-coordinate (left to right)
-    ocr_data_sorted = sorted(ocr_data, key=lambda x: (x['bbox'][0][1], x['bbox'][0][0]))  # Sort by y, then x
+    ocr_data_sorted = sorted(ocr_data, key=lambda x: (x['bbox'][1], x['bbox'][0]))  # Sort by y, then x
 
     organized_data = []
     for data in ocr_data_sorted:
@@ -175,7 +177,7 @@ def export_to_pdf(data):
         bbox = line['bbox']
         if bbox:
             # Adjust the position of the text based on bounding box (x and y coordinates)
-            pdf.set_xy(bbox[0][0] / 2, bbox[0][1] / 2)  # Scaling the coordinates for proper alignment
+            pdf.set_xy(bbox[0] / 2, bbox[1] / 2)  # Scaling the coordinates for proper alignment
         pdf.cell(200, 10, txt=text, ln=True)
 
     output = BytesIO()
