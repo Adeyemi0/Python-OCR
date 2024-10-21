@@ -1,6 +1,6 @@
 XlsxWriter
 streamlit
-opencv-python-headless
+opencv-python
 numpy
 paddleocr
 pdfplumber
