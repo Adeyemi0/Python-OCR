@@ -1,0 +1,10 @@
+XlsxWriter
+streamlit==1.29
+numpy
+opencv-python-headless
+paddleocr
+paddlepaddle
+pdfplumber
+pandas
+fpdf
+setuptools
