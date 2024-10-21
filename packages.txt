@@ -1,3 +1,6 @@
 libgl1-mesa-glx
 libglib2.0-0
 libssl-dev
+libsm6  # Common system dependency for image libraries
+libxrender1  # Common for image rendering
+libxext6  # Supports graphical functions
