@@ -1,0 +1,8 @@
+XlsxWriter
+streamlit
+opencv-python 
+numpy
+paddleocr
+pdfplumber
+pandas
+fpdf
