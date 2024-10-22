@@ -2,7 +2,7 @@ import streamlit as st
 import os
 import cv2
 import numpy as np
-from paddleocr import PPStructure, draw_structure_result, save_structure_res
+from paddleocr import PPStructure, PaddleOCR
 import pdfplumber
 import pandas as pd
 from fpdf import FPDF
@@ -31,19 +31,9 @@ def preprocess_image(image):
     return deskewed
 
 # Perform OCR with bounding box processing using PPStructure
-def perform_ocr_with_bounding_boxes(image, image_path, output_dir, min_confidence=0.6):
-    # Get text detection and recognition results from PPStructure
-    ocr_results = ocr(image)  
+def perform_ocr_with_bounding_boxes(image, min_confidence=0.6):
+    ocr_results = ocr(image)  # Get text detection and recognition results from PPStructure
     results = []
-    
-    # Save the structured OCR results for better presentation
-    save_structure_res(ocr_results, output_dir, os.path.basename(image_path).split('.')[0])
-
-    # Visualize the extracted table structure on the image
-    image_with_structure = draw_structure_result(image, ocr_results, font_path=None)
-
-    # Display the result image
-    st.image(image_with_structure, caption="Extracted Table Structure", use_column_width=True)
     
     for item in ocr_results:
         for elem in item['layout']['elements']:
@@ -58,7 +48,12 @@ def perform_ocr_with_bounding_boxes(image, image_path, output_dir, min_confidenc
 
 # Function to process bounding boxes and organize data spatially
 def process_bounding_boxes(ocr_data):
+    """
+    Process the bounding box data to determine the spatial relationship between fields.
+    """
+    # Sort results by the y-coordinate (top to bottom) and then x-coordinate (left to right)
     ocr_data_sorted = sorted(ocr_data, key=lambda x: (x['bbox'][1], x['bbox'][0]))  # Sort by y, then x
+
     organized_data = []
     for data in ocr_data_sorted:
         bbox = data['bbox']
@@ -84,78 +79,132 @@ def deskew_image(image):
     return rotated
 
 # Load and process files (images or PDFs)
-def load_and_extract(files, output_dir):
+def load_and_extract(files):
     extracted_data = []  # Use a list instead of a set
+
     with concurrent.futures.ThreadPoolExecutor() as executor:
-        future_to_file = {executor.submit(process_file, file, output_dir): file for file in files}
+        future_to_file = {executor.submit(process_file, file): file for file in files}
         for future in concurrent.futures.as_completed(future_to_file):
             result = future.result()
             if result:
                 extracted_data.extend(result)  # Use extend() to add results to the list
+
     return extracted_data
 
+
 # Process individual file
-def process_file(file, output_dir):
+def process_file(file):
     file_type = file.type
     extracted_data = []
+
     with tempfile.NamedTemporaryFile(delete=False) as temp_file:
         temp_file.write(file.read())
         temp_file.flush()
+
         if file_type == "application/pdf":
-            extracted_data.extend(process_pdf(temp_file.name, output_dir))
+            extracted_data.extend(process_pdf(temp_file.name))
         elif file_type.startswith("image/"):
-            extracted_data.extend(process_image(temp_file.name, output_dir))
+            extracted_data.extend(process_image(temp_file.name))
         else:
             st.warning(f"Unsupported file type: {file_type}")
+
     return extracted_data
 
 # Process PDF for text and images
-def process_pdf(pdf_path, output_dir):
+def process_pdf(pdf_path):
     extracted_data = []
+
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
             text = page.extract_text()
             if text:
-                extracted_data.append({'text': clean_text(text), 'bbox': None})
+                extracted_data.append({'text': clean_text(text), 'bbox': None})  # No bounding box for plain text
+
             for img in page.images:
                 cropped_image = extract_image_from_pdf(page, img)
                 if cropped_image is not None:
                     preprocessed_img = preprocess_image(cropped_image)
-                    ocr_data = perform_ocr_with_bounding_boxes(preprocessed_img, pdf_path, output_dir)
+                    ocr_data = perform_ocr_with_bounding_boxes(preprocessed_img)
                     processed_data = process_bounding_boxes(ocr_data)
                     extracted_data.extend(processed_data)
+
     return extracted_data
 
+# Extract and preprocess image from a PDF page
+def extract_image_from_pdf(page, img):
+    bbox = (img["x0"], img["top"], img["x1"], img["bottom"])
+    cropped_image = page.within_bbox(bbox).to_image().original
+    return cv2.cvtColor(np.array(cropped_image), cv2.COLOR_RGB2BGR) if cropped_image is not None else None
+
 # Process image files for OCR
-def process_image(image_path, output_dir):
+def process_image(image_path):
     image = cv2.imread(image_path)
+    
     if image is None:
         st.error(f"Error loading image from path: {image_path}")
         return []
+
     preprocessed_img = preprocess_image(image)
-    ocr_data = perform_ocr_with_bounding_boxes(preprocessed_img, image_path, output_dir)
+    ocr_data = perform_ocr_with_bounding_boxes(preprocessed_img)
     processed_data = process_bounding_boxes(ocr_data)
+
     return processed_data
+
+# Clean extracted text
+def clean_text(text):
+    text = re.sub(r'\s+', ' ', text)
+    text = text.strip()
+    return text
+
+# Export extracted data to Excel
+def export_to_excel(data):
+    output = BytesIO()
+    # Create DataFrame from extracted data
+    df = pd.DataFrame(data)  # This will automatically use the 'text' and 'bbox' keys from the data
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='OCR Results')
+    return output.getvalue()
+
+
+# Export extracted data to PDF
+def export_to_pdf(data):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+
+    for line in data:
+        text = line['text']
+        bbox = line['bbox']
+        if bbox:
+            # Adjust the position of the text based on bounding box (x and y coordinates)
+            pdf.set_xy(bbox[0] / 2, bbox[1] / 2)  # Scaling the coordinates for proper alignment
+        pdf.cell(200, 10, txt=text, ln=True)
+
+    output = BytesIO()
+    pdf.output(output)
+    return output.getvalue()
 
 # Main Streamlit app
 def main():
     st.title("Document Scanner with OCR")
     st.write("Upload images or PDFs, extract data, and download results in Excel or PDF.")
+
     uploaded_files = st.file_uploader("Upload Documents (Images or PDFs)", accept_multiple_files=True)
-    output_dir = "ocr_output"  # Directory to save OCR results
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    
+
     if uploaded_files:
         st.write("Processing documents...")
-        extracted_data = load_and_extract(uploaded_files, output_dir)
+        extracted_data = load_and_extract(uploaded_files)
+
         final_output = "\n".join([d['text'] for d in extracted_data])
+
         if final_output:
             st.write("Final Extracted Data:")
             st.text(final_output)
         else:
             st.write("No data extracted.")
+
         output_format = st.selectbox("Select output format", ["Excel", "PDF"])
+
         if st.button("Download"):
             if output_format == "Excel":
                 excel_data = export_to_excel(extracted_data)
