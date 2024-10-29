@@ -2,7 +2,7 @@ import streamlit as st
 import os
 import cv2
 import numpy as np
-from paddleocr import PPStructure, PaddleOCR
+from paddleocr import PaddleOCR  # Just use PaddleOCR for OCR and structure detection
 import pdfplumber
 import pandas as pd
 from fpdf import FPDF
@@ -11,8 +11,8 @@ import tempfile
 import concurrent.futures
 import re
 
-# Initialize PaddleOCR with the PPStructure module and English language model
-ocr = PPStructure(recovery=True, use_angle_cls=True, lang='en')
+# Initialize PaddleOCR with the English language model
+ocr = PaddleOCR(use_angle_cls=True, lang='en')  # Remove separate layout detection
 
 # Preprocess images for better OCR performance
 def preprocess_image(image):
@@ -30,36 +30,24 @@ def preprocess_image(image):
     deskewed = deskew_image(sharpened)
     return deskewed
 
-# Perform OCR with bounding box processing using PPStructure
-def perform_ocr_with_bounding_boxes(image, min_confidence=0.6):
-    ocr_results = ocr(image)  # Get text detection and recognition results from PPStructure
-    results = []
-    
-    for item in ocr_results:
-        for elem in item['layout']['elements']:
-            text = elem['text']
-            bbox = elem['bbox']
-            confidence = elem.get('confidence', 1.0)  # Default to 1.0 if confidence is not present
-            if confidence > min_confidence:
-                # Append bounding box coordinates along with the detected text
-                results.append({'text': text, 'bbox': bbox, 'confidence': confidence})
+# Perform OCR with structure detection
+def perform_ocr(image, min_confidence=0.6):
+    results = ocr.ocr(image, cls=True)  # Perform OCR and layout analysis
+    extracted_data = []
 
-    return results
+    for result in results:
+        for line in result:
+            if line[1][1] > min_confidence:  # Confidence check
+                text = line[1][0]
+                bbox = line[0]  # Bounding box coordinates
+                extracted_data.append({'text': text, 'bbox': bbox, 'confidence': line[1][1]})
+
+    return extracted_data
 
 # Function to process bounding boxes and organize data spatially
 def process_bounding_boxes(ocr_data):
-    """
-    Process the bounding box data to determine the spatial relationship between fields.
-    """
-    # Sort results by the y-coordinate (top to bottom) and then x-coordinate (left to right)
-    ocr_data_sorted = sorted(ocr_data, key=lambda x: (x['bbox'][1], x['bbox'][0]))  # Sort by y, then x
-
-    organized_data = []
-    for data in ocr_data_sorted:
-        bbox = data['bbox']
-        text = data['text']
-        organized_data.append({'text': text, 'bbox': bbox})
-    
+    ocr_data_sorted = sorted(ocr_data, key=lambda x: (x['bbox'][1][1], x['bbox'][0][0]))  # Sort by top-left corner (y, x)
+    organized_data = [{'text': data['text'], 'bbox': data['bbox']} for data in ocr_data_sorted]
     return organized_data
 
 # Deskew image to correct text angle
@@ -90,7 +78,6 @@ def load_and_extract(files):
                 extracted_data.extend(result)  # Use extend() to add results to the list
 
     return extracted_data
-
 
 # Process individual file
 def process_file(file):
@@ -124,7 +111,7 @@ def process_pdf(pdf_path):
                 cropped_image = extract_image_from_pdf(page, img)
                 if cropped_image is not None:
                     preprocessed_img = preprocess_image(cropped_image)
-                    ocr_data = perform_ocr_with_bounding_boxes(preprocessed_img)
+                    ocr_data = perform_ocr(preprocessed_img)  # Use the updated function
                     processed_data = process_bounding_boxes(ocr_data)
                     extracted_data.extend(processed_data)
 
@@ -145,7 +132,7 @@ def process_image(image_path):
         return []
 
     preprocessed_img = preprocess_image(image)
-    ocr_data = perform_ocr_with_bounding_boxes(preprocessed_img)
+    ocr_data = perform_ocr(preprocessed_img)  # Use the updated function
     processed_data = process_bounding_boxes(ocr_data)
 
     return processed_data
@@ -159,12 +146,10 @@ def clean_text(text):
 # Export extracted data to Excel
 def export_to_excel(data):
     output = BytesIO()
-    # Create DataFrame from extracted data
     df = pd.DataFrame(data)  # This will automatically use the 'text' and 'bbox' keys from the data
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False, sheet_name='OCR Results')
     return output.getvalue()
-
 
 # Export extracted data to PDF
 def export_to_pdf(data):
@@ -177,7 +162,7 @@ def export_to_pdf(data):
         bbox = line['bbox']
         if bbox:
             # Adjust the position of the text based on bounding box (x and y coordinates)
-            pdf.set_xy(bbox[0] / 2, bbox[1] / 2)  # Scaling the coordinates for proper alignment
+            pdf.set_xy(bbox[0][0] / 2, bbox[0][1] / 2)  # Scaling the coordinates for proper alignment
         pdf.cell(200, 10, txt=text, ln=True)
 
     output = BytesIO()
@@ -195,7 +180,7 @@ def main():
         st.write("Processing documents...")
         extracted_data = load_and_extract(uploaded_files)
 
-        final_output = "\n".join([d['text'] for d in extracted_data])
+        final_output = "\n".join([d['text'] for d in extracted_data if d['text']])  # Filter out empty text
 
         if final_output:
             st.write("Final Extracted Data:")
@@ -203,15 +188,14 @@ def main():
         else:
             st.write("No data extracted.")
 
-        output_format = st.selectbox("Select output format", ["Excel", "PDF"])
+        # Export options
+        if st.button("Export to Excel"):
+            excel_data = export_to_excel(extracted_data)
+            st.download_button("Download Excel File", excel_data, "extracted_data.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-        if st.button("Download"):
-            if output_format == "Excel":
-                excel_data = export_to_excel(extracted_data)
-                st.download_button("Download Excel", excel_data, file_name="ocr_results.xlsx")
-            elif output_format == "PDF":
-                pdf_data = export_to_pdf(extracted_data)
-                st.download_button("Download PDF", pdf_data, file_name="ocr_results.pdf")
+        if st.button("Export to PDF"):
+            pdf_data = export_to_pdf(extracted_data)
+            st.download_button("Download PDF File", pdf_data, "extracted_data.pdf", "application/pdf")
 
 if __name__ == "__main__":
     main()
