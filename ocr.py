@@ -2,17 +2,21 @@ import streamlit as st
 import os
 import cv2
 import numpy as np
-from paddleocr import PaddleOCR  # Just use PaddleOCR for OCR and structure detection
+from paddleocr import PaddleOCR, PPStructure, draw_structure_result, save_structure_res
 import pdfplumber
 import pandas as pd
-from fpdf import FPDF
 from io import BytesIO
 import tempfile
 import concurrent.futures
 import re
+from PIL import Image
 
 # Initialize PaddleOCR with the English language model
-ocr = PaddleOCR(use_angle_cls=True, lang='en')  # Remove separate layout detection
+ocr = PaddleOCR(use_angle_cls=True, lang='en')
+
+# Initialize the table recognition engine
+table_engine = PPStructure(show_log=True)
+save_folder = './output'  # Folder to save the results
 
 # Preprocess images for better OCR performance
 def preprocess_image(image):
@@ -25,30 +29,36 @@ def preprocess_image(image):
     denoised = cv2.medianBlur(denoised, 3)
     kernel = np.ones((3, 3), np.uint8)
     morph = cv2.morphologyEx(denoised, cv2.MORPH_CLOSE, kernel)
-    kernel_sharpening = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+    kernel_sharpening = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]] )
     sharpened = cv2.filter2D(morph, -1, kernel_sharpening)
     deskewed = deskew_image(sharpened)
     return deskewed
 
 # Perform OCR with structure detection
 def perform_ocr(image, min_confidence=0.6):
-    results = ocr.ocr(image, cls=True)  # Perform OCR and layout analysis
+    results = ocr.ocr(image, cls=True)
     extracted_data = []
 
     for result in results:
         for line in result:
             if line[1][1] > min_confidence:  # Confidence check
                 text = line[1][0]
-                bbox = line[0]  # Bounding box coordinates
+                bbox = line[0]
                 extracted_data.append({'text': text, 'bbox': bbox, 'confidence': line[1][1]})
 
     return extracted_data
 
-# Function to process bounding boxes and organize data spatially
-def process_bounding_boxes(ocr_data):
-    ocr_data_sorted = sorted(ocr_data, key=lambda x: (x['bbox'][1][1], x['bbox'][0][0]))  # Sort by top-left corner (y, x)
-    organized_data = [{'text': data['text'], 'bbox': data['bbox']} for data in ocr_data_sorted]
-    return organized_data
+# Perform table recognition
+def perform_table_recognition(image, img_path):
+    result = table_engine(image)  # Recognize table structure
+    save_structure_res(result, save_folder, os.path.basename(img_path).split('.')[0])  # Save results
+
+    table_data = []
+    for line in result:
+        line.pop('img')  # Remove image data
+        table_data.append(line)  # Append structured result
+
+    return table_data
 
 # Deskew image to correct text angle
 def deskew_image(image):
@@ -112,8 +122,12 @@ def process_pdf(pdf_path):
                 if cropped_image is not None:
                     preprocessed_img = preprocess_image(cropped_image)
                     ocr_data = perform_ocr(preprocessed_img)  # Use the updated function
-                    processed_data = process_bounding_boxes(ocr_data)
+                    processed_data = process_bounding_boxes(ocr_data)  # Call the bounding box processing function
                     extracted_data.extend(processed_data)
+
+                    # Perform table recognition
+                    table_data = perform_table_recognition(cropped_image, pdf_path)
+                    extracted_data.extend(table_data)  # Add table data to extracted data
 
     return extracted_data
 
@@ -133,7 +147,11 @@ def process_image(image_path):
 
     preprocessed_img = preprocess_image(image)
     ocr_data = perform_ocr(preprocessed_img)  # Use the updated function
-    processed_data = process_bounding_boxes(ocr_data)
+    processed_data = process_bounding_boxes(ocr_data)  # Call the bounding box processing function
+
+    # Perform table recognition
+    table_data = perform_table_recognition(image, image_path)
+    processed_data.extend(table_data)  # Add table data to processed data
 
     return processed_data
 
@@ -151,51 +169,39 @@ def export_to_excel(data):
         df.to_excel(writer, index=False, sheet_name='OCR Results')
     return output.getvalue()
 
-# Export extracted data to PDF
-def export_to_pdf(data):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=12)
+# Process bounding boxes from OCR results
+def process_bounding_boxes(ocr_data):
+    processed_data = []
+    for entry in ocr_data:
+        text = entry['text']
+        bbox = entry['bbox']  # Assuming bbox is in the format required for display
+        confidence = entry['confidence']
 
-    for line in data:
-        text = line['text']
-        bbox = line['bbox']
-        if bbox:
-            # Adjust the position of the text based on bounding box (x and y coordinates)
-            pdf.set_xy(bbox[0][0] / 2, bbox[0][1] / 2)  # Scaling the coordinates for proper alignment
-        pdf.cell(200, 10, txt=text, ln=True)
-
-    output = BytesIO()
-    pdf.output(output)
-    return output.getvalue()
+        processed_data.append({
+            'text': text,
+            'bbox': bbox,
+            'confidence': confidence
+        })
+    return processed_data
 
 # Main Streamlit app
 def main():
     st.title("Document Scanner with OCR")
-    st.write("Upload images or PDFs, extract data, and download results in Excel or PDF.")
+    st.write("Upload your images or PDF files for OCR and table recognition.")
 
-    uploaded_files = st.file_uploader("Upload Documents (Images or PDFs)", accept_multiple_files=True)
+    uploaded_files = st.file_uploader("Choose files", type=["png", "jpg", "jpeg", "pdf"], accept_multiple_files=True)
 
-    if uploaded_files:
-        st.write("Processing documents...")
-        extracted_data = load_and_extract(uploaded_files)
+    if uploaded_files and st.button("Process"):
+        with st.spinner("Processing..."):
+            extracted_data = load_and_extract(uploaded_files)
 
-        final_output = "\n".join([d['text'] for d in extracted_data if d['text']])  # Filter out empty text
+        # Display extracted data
+        for data in extracted_data:
+            st.write(data)
 
-        if final_output:
-            st.write("Final Extracted Data:")
-            st.text(final_output)
-        else:
-            st.write("No data extracted.")
-
-        # Export options
-        if st.button("Export to Excel"):
-            excel_data = export_to_excel(extracted_data)
-            st.download_button("Download Excel File", excel_data, "extracted_data.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-        if st.button("Export to PDF"):
-            pdf_data = export_to_pdf(extracted_data)
-            st.download_button("Download PDF File", pdf_data, "extracted_data.pdf", "application/pdf")
+        # Export option for Excel
+        excel_data = export_to_excel(extracted_data)
+        st.download_button("Download Excel", excel_data, "extracted_data.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 if __name__ == "__main__":
     main()
