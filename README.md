@@ -1,5 +1,3 @@
-# Document Scanner with OCR
-
 ## Overview
 
 This project is a console-based document scanner application that uses Optical Character Recognition (OCR) to extract text and tables from images and PDF files. It leverages the PaddleOCR and PPStructure libraries for accurate text recognition and structured data extraction, making it useful for automating data entry and document analysis tasks.
@@ -36,6 +34,6 @@ This project is a console-based document scanner application that uses Optical C
    ```
 ## Usage
 ```bash
-python Python-OCR.py
+python python-ocr.py
  ```
 
