@@ -17,7 +17,6 @@ ocr = PaddleOCR(use_angle_cls=True, lang='en')
 table_engine = PPStructure(show_log=True)
 save_folder = './output'  # Folder to save the results
 
-# Ensure the output directory exists
 os.makedirs(save_folder, exist_ok=True)
 
 # Preprocess images for better OCR performance
